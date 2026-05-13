@@ -18,16 +18,40 @@ def extract_text(pdf_path: str) -> str:
         return "\n\n".join(pages)
 
 
+def extract_json(raw: str) -> dict:
+    """Robuste JSON-Extraktion — findet JSON-Objekt auch mit Prefix-Text."""
+    import re
+    raw = raw.strip()
+    if "```" in raw:
+        for part in raw.split("```"):
+            try:
+                return json.loads(part.replace("json", "").strip())
+            except Exception:
+                continue
+    try:
+        return json.loads(raw)
+    except Exception:
+        pass
+    match = re.search(r'\{[\s\S]*\}', raw)
+    if match:
+        try:
+            return json.loads(match.group())
+        except Exception:
+            pass
+    return {"raw_response": raw, "parse_error": "Kein valides JSON gefunden"}
+
+
 def analyze_document(text: str, model: str = "llama3.2") -> dict:
     prompt = f"""Analysiere das folgende Geschäftsdokument und extrahiere strukturierte Informationen.
 Antworte NUR mit validem JSON – keine weiteren Erklärungen, kein Markdown.
+Alle Felder müssen einfache Strings oder Listen sein, keine verschachtelten Objekte.
 
 Extrahiere folgende Felder (falls nicht vorhanden: null):
 {{
   "dokumenttyp": "Rechnung | Vertrag | Angebot | Lieferschein | Brief | Sonstiges",
   "datum": "YYYY-MM-DD oder null",
-  "absender": "Unternehmen oder Person",
-  "empfaenger": "Unternehmen oder Person",
+  "absender": "Name des Absenders als einfacher String",
+  "empfaenger": "Name des Empfängers als einfacher String",
   "betraege": [{{"bezeichnung": "...", "betrag": "...", "waehrung": "EUR"}}],
   "fristen": ["Zahlungsziel, Lieferdatum etc."],
   "schluessel_infos": ["wichtigste Punkte als Liste"],
@@ -38,16 +62,7 @@ Dokument (max. 3000 Zeichen):
 {text[:3000]}"""
 
     response = ollama.generate(model=model, prompt=prompt)
-    raw = response["response"].strip()
-
-    # JSON aus der Antwort extrahieren falls von Markdown umgeben
-    if "```" in raw:
-        raw = raw.split("```")[1].replace("json", "").strip()
-
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return {"raw_response": raw, "parse_error": "LLM-Antwort kein valides JSON"}
+    return extract_json(response["response"])
 
 
 def print_result(result: dict, pdf_path: str) -> None:

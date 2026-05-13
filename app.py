@@ -12,7 +12,7 @@ from pathlib import Path
 st.set_page_config(
     page_title="Document Intelligence",
     page_icon="📄",
-    layout="centered"
+    layout="wide"
 )
 
 st.title("📄 Document Intelligence")
@@ -45,15 +45,53 @@ def extract_text(pdf_file) -> str:
         return "\n\n".join(pages)
 
 
+def extract_json(raw: str) -> dict:
+    """Robuste JSON-Extraktion — findet JSON-Objekt auch mit Prefix-Text."""
+    raw = raw.strip()
+    # Markdown code blocks entfernen
+    if "```" in raw:
+        parts = raw.split("```")
+        for part in parts:
+            candidate = part.replace("json", "").strip()
+            try:
+                return json.loads(candidate)
+            except Exception:
+                continue
+    # Direkt versuchen
+    try:
+        return json.loads(raw)
+    except Exception:
+        pass
+    # JSON-Objekt mit Regex suchen
+    import re
+    match = re.search(r'\{[\s\S]*\}', raw)
+    if match:
+        try:
+            return json.loads(match.group())
+        except Exception:
+            pass
+    return {"raw_response": raw}
+
+
+def safe_str(val) -> str:
+    """Wandelt dict-Werte sicher in String um."""
+    if val is None or val in ("null", "None", ""):
+        return "—"
+    if isinstance(val, dict):
+        return val.get("name") or val.get("value") or str(val)
+    return str(val)
+
+
 def analyze(text: str, model: str) -> dict:
     prompt = f"""Analysiere das folgende Geschäftsdokument und extrahiere strukturierte Informationen.
 Antworte NUR mit validem JSON – keine weiteren Erklärungen, kein Markdown.
+Alle Felder müssen einfache Strings oder Listen sein, keine verschachtelten Objekte.
 
 {{
   "dokumenttyp": "Rechnung | Vertrag | Angebot | Lieferschein | Brief | Sonstiges",
   "datum": "YYYY-MM-DD oder null",
-  "absender": "Unternehmen oder Person",
-  "empfaenger": "Unternehmen oder Person",
+  "absender": "Name des Absenders als einfacher String",
+  "empfaenger": "Name des Empfängers als einfacher String",
   "betraege": [{{"bezeichnung": "...", "betrag": "...", "waehrung": "EUR"}}],
   "fristen": ["Zahlungsziel, Lieferdatum etc."],
   "schluessel_infos": ["wichtigste Punkte als Liste"],
@@ -64,13 +102,7 @@ Dokument:
 {text[:3000]}"""
 
     response = ollama.generate(model=model, prompt=prompt)
-    raw = response["response"].strip()
-    if "```" in raw:
-        raw = raw.split("```")[1].replace("json", "").strip()
-    try:
-        return json.loads(raw)
-    except Exception:
-        return {"raw_response": raw}
+    return extract_json(response["response"])
 
 
 uploaded = st.file_uploader(
@@ -104,28 +136,32 @@ if uploaded:
         else:
             col1, col2 = st.columns(2)
             with col1:
-                st.metric("Dokumenttyp", result.get("dokumenttyp", "—"))
-                st.metric("Datum", result.get("datum", "—"))
+                st.metric("Dokumenttyp", safe_str(result.get("dokumenttyp")))
+                st.metric("Datum", safe_str(result.get("datum")))
             with col2:
-                st.metric("Absender", result.get("absender", "—"))
-                st.metric("Empfänger", result.get("empfaenger", "—"))
+                st.metric("Absender", safe_str(result.get("absender")))
+                st.metric("Empfänger", safe_str(result.get("empfaenger")))
 
             if result.get("zusammenfassung"):
                 st.info(f"💬 **Zusammenfassung:** {result['zusammenfassung']}")
 
-            if result.get("betraege"):
+            betraege = [b for b in result.get("betraege", [])
+                        if b.get("betrag") and b.get("betrag") not in (None, "null", "None")]
+            if betraege:
                 st.markdown("**💶 Beträge:**")
-                for b in result["betraege"]:
+                for b in betraege:
                     st.markdown(f"- {b.get('bezeichnung','')}: **{b.get('betrag','')} {b.get('waehrung','')}**")
 
-            if result.get("fristen"):
+            fristen = [f for f in result.get("fristen", []) if f and f not in (None, "null", "None")]
+            if fristen:
                 st.markdown("**⏰ Fristen:**")
-                for f in result["fristen"]:
+                for f in fristen:
                     st.markdown(f"- {f}")
 
-            if result.get("schluessel_infos"):
+            infos = [i for i in result.get("schluessel_infos", []) if i and i not in (None, "null", "None")]
+            if infos:
                 st.markdown("**🔑 Schlüssel-Informationen:**")
-                for info in result["schluessel_infos"]:
+                for info in infos:
                     st.markdown(f"- {info}")
 
             with st.expander("🔧 JSON-Rohdaten"):
